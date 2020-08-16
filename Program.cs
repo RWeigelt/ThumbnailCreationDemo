@@ -11,27 +11,14 @@ namespace ThumbnailCreationDemo
 {
 	/// <summary>
 	/// Demo code for how to create thumbnails of video and image files, using
-	/// .NET Core 3.1, the StorageFile API and/or the executable of ffmpeg.
+	/// .NET Core 3.1, the StorageFile API and/or the executable of FFmpeg.
 	/// </summary>
-	class Program
+	partial class Program
 	{
-		// Change the constant to the location of the ffmpeg executable on your system:
-		const string _FfmpegExeFilePath = @"C:\Program Files\FFmpeg\bin\ffmpeg2.exe";
+		// Change the constant to the location of the FFmpeg executable on your system:
+		const string _FfmpegExeFilePath = @"C:\Program Files\FFmpeg\bin\ffmpeg.exe";
 
-
-		const uint _SizeDivider = 3;
-
-		enum MediaType
-		{
-			Video,
-			Image
-		}
-
-		struct ThumbnailSize
-		{
-			public uint Width;
-			public uint Height;
-		}
+		const uint _SizeDivider = 3; // Thumbnails to have 1/3 of the original size
 
 		static async Task Main(string[] args)
 		{
@@ -40,29 +27,34 @@ namespace ThumbnailCreationDemo
 				Console.WriteLine("Please make sure that the \"_FfmpegExeFilePath\" constant");
 				Console.WriteLine("contains the location of \"ffmpeg.exe\" on your system!");
 				Console.WriteLine();
-				Console.WriteLine($"Current value is \"{{_FfmpegExeFilePath}}\"");
+				Console.WriteLine($"Current value is \"{_FfmpegExeFilePath}\"");
 				Console.ReadKey();
 				return;
 			}
-				
+
 			var mediaDirectoryPath = GetMediaDirectoryPath();
 
 			var videoFile = await GetStorageFile(mediaDirectoryPath, @"Video.wmv");
 			var videoProperties = await videoFile.Properties.GetVideoPropertiesAsync();
-			var videoHeight = videoProperties.Height;
-			var videoWidth = videoProperties.Width;
-			await CreateThumbnailUsingStorageFile(videoFile, GetRequestedThumbnailSize(videoWidth, videoHeight));
-			await CreateThumbnailUsingFfmpeg(videoFile.Path, GetThumbnailSize(videoWidth, videoHeight), MediaType.Video);
+			var videoThumbnailSize = new ThumbnailSize(videoProperties.Width, videoProperties.Height, _SizeDivider);
+
+			var millisecondsVideo1 = await CreateThumbnailUsingStorageFile(videoFile, videoThumbnailSize);
+			var millisecondsVideo2 = await CreateThumbnailUsingFfmpeg(videoFile.Path, videoThumbnailSize, MediaType.Video);
 
 			var imageFile = await GetStorageFile(mediaDirectoryPath, @"Image.png");
 			var imageProperties = await imageFile.Properties.GetImagePropertiesAsync();
-			var imageHeight = imageProperties.Height;
-			var imageWidth = imageProperties.Width;
+			var imageThumbnailSize = new ThumbnailSize(imageProperties.Width, imageProperties.Height, _SizeDivider);
 
-			await CreateThumbnailUsingStorageFile(imageFile, GetRequestedThumbnailSize(imageWidth, imageHeight));
-			await CreateThumbnailUsingFfmpeg(imageFile.Path, GetThumbnailSize(imageWidth, imageHeight), MediaType.Image);
+			var millisecondsImage1 = await CreateThumbnailUsingStorageFile(imageFile, imageThumbnailSize);
+			var millisecondsImage2 = await CreateThumbnailUsingFfmpeg(imageFile.Path, imageThumbnailSize, MediaType.Image);
 
 			Console.WriteLine();
+			Console.WriteLine();
+			Console.WriteLine("======================");
+			Console.WriteLine($"Video (StorageFile): {millisecondsVideo1} ms");
+			Console.WriteLine($"Video (FFmpeg)     : {millisecondsVideo2} ms");
+			Console.WriteLine($"Image (StorageFile): {millisecondsImage1} ms");
+			Console.WriteLine($"Image (FFmpeg)     : {millisecondsImage2} ms");
 			Console.WriteLine();
 			Console.WriteLine("======================");
 			Console.WriteLine($"Thumbnails created in \"{mediaDirectoryPath}\".");
@@ -72,16 +64,6 @@ namespace ThumbnailCreationDemo
 			{
 				Process.Start("explorer", $"\"{mediaDirectoryPath}\"");
 			}
-		}
-
-		static uint GetRequestedThumbnailSize(uint width, uint height)
-		{
-			return Math.Max(width, height) / _SizeDivider;
-		}
-
-		static ThumbnailSize GetThumbnailSize(uint width, uint height)
-		{
-			return new ThumbnailSize { Width = width / _SizeDivider, Height = height / _SizeDivider };
 		}
 
 		static string GetMediaDirectoryPath()
@@ -98,11 +80,14 @@ namespace ThumbnailCreationDemo
 			return await StorageFile.GetFileFromPathAsync(sourceFilePath);
 		}
 
-		static async Task CreateThumbnailUsingStorageFile(StorageFile storageFile, uint requestedSize)
+		static async Task<long> CreateThumbnailUsingStorageFile(StorageFile storageFile, ThumbnailSize thumbnailSize)
 		{
+			var stopwatch = new Stopwatch();
+			stopwatch.Start();
+
 			var thumbnailFilePath = storageFile.Path + ".thumb1.png";
 			var storageFolder = await storageFile.GetParentAsync();
-			using StorageItemThumbnail thumbnail = await storageFile.GetThumbnailAsync(ThumbnailMode.SingleItem, requestedSize, ThumbnailOptions.ResizeThumbnail);
+			using StorageItemThumbnail thumbnail = await storageFile.GetThumbnailAsync(ThumbnailMode.SingleItem, thumbnailSize.Max, ThumbnailOptions.ResizeThumbnail);
 
 			var bitmapDecoder = await BitmapDecoder.CreateAsync(thumbnail.CloneStream());
 			var softwareBitmap = await bitmapDecoder.GetSoftwareBitmapAsync();
@@ -112,29 +97,36 @@ namespace ThumbnailCreationDemo
 			var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.PngEncoderId, stream);
 			encoder.SetSoftwareBitmap(softwareBitmap);
 			await encoder.FlushAsync();
+
+			stopwatch.Stop();
+			return stopwatch.ElapsedMilliseconds;
 		}
 
-		static Task CreateThumbnailUsingFfmpeg(string mediaFilePath, ThumbnailSize thumbnailSize, MediaType mediaType)
+		static Task<long> CreateThumbnailUsingFfmpeg(string mediaFilePath, ThumbnailSize thumbnailSize, MediaType mediaType)
 		{
+			var stopwatch = new Stopwatch();
+			stopwatch.Start();
+
 			var thumbnailFilePath = mediaFilePath + ".thumb2.png";
 
-			string seekParameter = (mediaType == MediaType.Video) ? "-ss 5" : "";
-			var tcs = new TaskCompletionSource<int>();
+			string additionalVideoParameters = (mediaType == MediaType.Video) ? "-ss 5 -an" : "";
+			var tcs = new TaskCompletionSource<long>();
 
 			var process = new Process
 			{
 				StartInfo =
 					{
 						FileName = _FfmpegExeFilePath,
-						Arguments = $"-i \"{mediaFilePath}\" -vframes 1 -an -s {thumbnailSize.Width}x{thumbnailSize.Height} {seekParameter}  -y \"{thumbnailFilePath}\""
+						Arguments = $"{additionalVideoParameters} -i \"{mediaFilePath}\" -vframes 1 -s {thumbnailSize.Width}x{thumbnailSize.Height} -y \"{thumbnailFilePath}\""
 					},
-				EnableRaisingEvents = true
+				EnableRaisingEvents = true // so we'll get the Exited event
 			};
 
 			process.Exited += (sender, args) =>
 			{
-				tcs.SetResult(process.ExitCode);
 				process.Dispose();
+				stopwatch.Stop();
+				tcs.SetResult(stopwatch.ElapsedMilliseconds);
 			};
 			process.Start();
 			return tcs.Task;
