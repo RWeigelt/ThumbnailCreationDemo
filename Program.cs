@@ -119,7 +119,7 @@ namespace ThumbnailCreationDemo
 						FileName = _FfmpegExeFilePath,
 						Arguments = $"{additionalVideoParameters} -i \"{mediaFilePath}\" -vframes 1 -s {thumbnailSize.Width}x{thumbnailSize.Height} -y \"{thumbnailFilePath}\""
 					},
-				EnableRaisingEvents = true // so we'll get the Exited event
+				EnableRaisingEvents = true // so the "Exited" event will get raised when the process has finished
 			};
 
 			process.Exited += (sender, args) =>
